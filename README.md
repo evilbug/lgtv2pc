@@ -130,3 +130,7 @@ go vet ./...
 # test without installing (needs root for /dev/input):
 sudo ./lgtv2pc -config ./config.example.json
 ```
+
+---
+
+If you find this useful, you can [buy me a coffee ☕](https://ko-fi.com/iagoop).
