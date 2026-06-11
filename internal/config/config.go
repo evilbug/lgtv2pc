@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // PowerMode define cómo se apaga/enciende la TV.
@@ -36,6 +37,12 @@ type Config struct {
 	SuspendKey string `json:"suspend_key"`
 	// WakeKey es la tecla cuyo doble toque enciende la TV (nombre o keycode).
 	WakeKey string `json:"wake_key"`
+	// HDMIInput limita la integración a una entrada concreta de la TV: si está
+	// configurada y la TV está mostrando otra entrada/app, no se envía ningún
+	// comando (para no interferir otros usos). Vacío = sin restricción.
+	// Acepta "hdmi1".."hdmi4", solo el número, o un appId completo
+	// ("com.webos.app.hdmi2").
+	HDMIInput string `json:"hdmi_input"`
 
 	// path es la ruta del archivo cargado, para poder reescribirlo.
 	path string `json:"-"`
@@ -124,3 +131,16 @@ func (c *Config) WSURL() string {
 
 // SetPath fija la ruta (usado al crear una config nueva para -pair).
 func (c *Config) SetPath(p string) { c.path = filepath.Clean(p) }
+
+// HDMIAppID resuelve HDMIInput al appId de webOS correspondiente, o "" si no
+// hay restricción de entrada configurada.
+func (c *Config) HDMIAppID() string {
+	s := strings.ToLower(strings.TrimSpace(c.HDMIInput))
+	if s == "" {
+		return ""
+	}
+	if strings.Contains(s, ".") {
+		return strings.TrimSpace(c.HDMIInput) // ya es un appId completo
+	}
+	return "com.webos.app.hdmi" + strings.TrimPrefix(s, "hdmi")
+}

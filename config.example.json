@@ -6,5 +6,6 @@
   "secure": false,
   "double_tap_ms": 400,
   "suspend_key": "rightctrl",
-  "wake_key": "rightshift"
+  "wake_key": "rightshift",
+  "hdmi_input": ""
 }

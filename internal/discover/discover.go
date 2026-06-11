@@ -1,36 +1,68 @@
-// Package discover localiza TVs LG en la red local por SSDP y resuelve su MAC
-// a partir de la tabla ARP del kernel.
+// Package discover localiza TVs LG en la red local. Intenta SSDP (rápido pero
+// poco fiable: muchos switches/APs filtran multicast) y, como respaldo robusto,
+// escanea el /24 local buscando los puertos SSAP (3000/3001) que abren las TVs
+// webOS. Además resuelve la MAC desde la tabla ARP del kernel.
 package discover
 
 import (
 	"bufio"
+	"fmt"
 	"net"
 	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 // TV es una TV descubierta.
 type TV struct {
 	IP     string
-	Server string // cabecera SERVER del anuncio SSDP (modelo/SO), si la hay
+	Server string // cabecera SERVER del anuncio SSDP, si la hubo
+	Secure bool   // true si solo expone el puerto seguro 3001 (requiere wss)
+	MAC    string // resuelta por ARP, si está disponible
 }
 
-// ssdpAddr es la dirección multicast estándar de SSDP.
-const ssdpAddr = "239.255.255.250:1900"
+const (
+	ssdpAddr     = "239.255.255.250:1900"
+	searchTarget = "urn:lge-com:service:webos-second-screen:1"
+	portInsecure = 3000
+	portSecure   = 3001
+)
 
-// searchTarget responde solo en TVs LG webOS, así que cualquier respondedor es una TV.
-const searchTarget = "urn:lge-com:service:webos-second-screen:1"
+// Discover combina SSDP y escaneo de puertos, y enriquece con la MAC por ARP.
+func Discover(timeout time.Duration) []TV {
+	merged := map[string]*TV{}
 
-// Discover envía un M-SEARCH y recopila las TVs que responden hasta agotar timeout.
-func Discover(timeout time.Duration) ([]TV, error) {
+	for ip, server := range ssdpSearch(timeout) {
+		merged[ip] = &TV{IP: ip, Server: server}
+	}
+	for ip, tv := range scanSubnet(400 * time.Millisecond) {
+		if cur, ok := merged[ip]; ok {
+			cur.Secure = tv.Secure
+		} else {
+			merged[ip] = tv
+		}
+	}
+
+	out := make([]TV, 0, len(merged))
+	for _, tv := range merged {
+		tv.MAC = MACForIP(tv.IP)
+		out = append(out, *tv)
+	}
+	return out
+}
+
+// ssdpSearch envía un M-SEARCH y recopila los respondedores (ip -> SERVER).
+func ssdpSearch(timeout time.Duration) map[string]string {
+	out := map[string]string{}
 	raddr, err := net.ResolveUDPAddr("udp4", ssdpAddr)
 	if err != nil {
-		return nil, err
+		return out
 	}
 	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
 	if err != nil {
-		return nil, err
+		return out
 	}
 	defer conn.Close()
 
@@ -39,35 +71,82 @@ func Discover(timeout time.Duration) ([]TV, error) {
 		"MAN: \"ssdp:discover\"\r\n" +
 		"MX: 2\r\n" +
 		"ST: " + searchTarget + "\r\n\r\n"
-
-	// Se envía un par de veces: UDP multicast puede perderse.
 	for i := 0; i < 2; i++ {
-		if _, err := conn.WriteToUDP([]byte(msg), raddr); err != nil {
-			return nil, err
-		}
+		_, _ = conn.WriteToUDP([]byte(msg), raddr)
 	}
 
 	_ = conn.SetReadDeadline(time.Now().Add(timeout))
-
-	found := make(map[string]TV)
 	buf := make([]byte, 2048)
 	for {
 		n, src, err := conn.ReadFromUDP(buf)
 		if err != nil {
-			break // normalmente el deadline
+			break
 		}
 		ip := src.IP.String()
-		if _, ok := found[ip]; ok {
-			continue
+		if _, ok := out[ip]; !ok {
+			out[ip] = parseHeader(string(buf[:n]), "SERVER")
 		}
-		found[ip] = TV{IP: ip, Server: parseHeader(string(buf[:n]), "SERVER")}
+	}
+	return out
+}
+
+// scanSubnet escanea el /24 de la interfaz local buscando puertos SSAP abiertos.
+func scanSubnet(perHost time.Duration) map[string]*TV {
+	ip := localIPv4()
+	if ip == nil {
+		return nil
+	}
+	base := fmt.Sprintf("%d.%d.%d.", ip[0], ip[1], ip[2])
+
+	res := map[string]*TV{}
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 128)
+
+	portOpen := func(addr string, port int) bool {
+		c, err := net.DialTimeout("tcp", net.JoinHostPort(addr, strconv.Itoa(port)), perHost)
+		if err != nil {
+			return false
+		}
+		_ = c.Close()
+		return true
 	}
 
-	out := make([]TV, 0, len(found))
-	for _, tv := range found {
-		out = append(out, tv)
+	for i := 1; i < 255; i++ {
+		addr := base + strconv.Itoa(i)
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(addr string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			has3000 := portOpen(addr, portInsecure)
+			has3001 := portOpen(addr, portSecure)
+			if !has3000 && !has3001 {
+				return
+			}
+			mu.Lock()
+			res[addr] = &TV{IP: addr, Secure: has3001 && !has3000}
+			mu.Unlock()
+		}(addr)
 	}
-	return out, nil
+	wg.Wait()
+	return res
+}
+
+// localIPv4 devuelve la primera IPv4 no loopback de la máquina.
+func localIPv4() net.IP {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil
+	}
+	for _, a := range addrs {
+		if ipnet, ok := a.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+			if v4 := ipnet.IP.To4(); v4 != nil {
+				return v4
+			}
+		}
+	}
+	return nil
 }
 
 // parseHeader extrae el valor de una cabecera HTTP-like de una respuesta SSDP.
@@ -82,8 +161,7 @@ func parseHeader(resp, name string) string {
 	return ""
 }
 
-// MACForIP busca la MAC asociada a una IP en la tabla ARP del kernel
-// (/proc/net/arp). Devuelve "" si no se encuentra (p.ej. aún sin tráfico).
+// MACForIP busca la MAC asociada a una IP en la tabla ARP del kernel.
 func MACForIP(ip string) string {
 	f, err := os.Open("/proc/net/arp")
 	if err != nil {
@@ -96,8 +174,7 @@ func MACForIP(ip string) string {
 	for sc.Scan() {
 		fields := strings.Fields(sc.Text())
 		if len(fields) >= 4 && fields[0] == ip {
-			mac := fields[3]
-			if mac != "00:00:00:00:00:00" {
+			if mac := fields[3]; mac != "00:00:00:00:00:00" {
 				return mac
 			}
 		}

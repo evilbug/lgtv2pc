@@ -33,10 +33,16 @@ func main() {
 		configPath = flag.String("config", defaultConfigPath, "ruta del archivo de configuración")
 		setup      = flag.Bool("setup", false, "onboarding interactivo: localiza la TV, empareja y crea la config")
 		pair       = flag.Bool("pair", false, "re-empareja con la TV y guarda la client-key (config ya existente)")
+		disco      = flag.Bool("discover", false, "lista las TVs encontradas en la red y sale (diagnóstico)")
 	)
 	flag.Parse()
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	if *disco {
+		runDiscover()
+		return
+	}
 
 	if *setup {
 		if err := runSetup(log, *configPath); err != nil {

@@ -43,9 +43,9 @@ journalctl -u lgtv2pc -f     # ver logs
 
 Con la TV **encendida** y en la misma red, ejecuta `sudo lgtv2pc -setup`. El asistente:
 
-1. **Localiza la TV** en la red por SSDP (o te deja escribir la IP a mano si no aparece).
+1. **Localiza las TVs** en la red por SSDP y, como respaldo, escaneando los puertos SSAP (3000/3001) del `/24` local. **Si hay varias** (p.ej. una en el salón), las lista con IP/MAC y eliges; también puedes escribir la IP a mano. Detecta solo si la TV requiere conexión segura (wss/3001).
 2. Pregunta el **modo de apagado** (`screen` / `full`).
-3. **Empareja (auth)**: la TV muestra un diálogo de "solicitud de conexión" — **acéptalo en la pantalla**. Se guarda la `client-key`.
+3. **Empareja (auth)**: la TV muestra un diálogo de "solicitud de conexión" — **acéptalo en la pantalla**. Se guarda la `client-key`. Después muestra el **modelo** y manda un **aviso a la TV** para que confirmes que es la correcta.
 4. **Detecta la MAC** automáticamente (vía tabla ARP) para Wake-on-LAN.
 5. Permite ajustar las **teclas** (Enter acepta los valores por defecto).
 6. Escribe `/etc/lgtv2pc/config.json`.
@@ -77,10 +77,17 @@ Con la TV **encendida** y en la misma red, ejecuta `sudo lgtv2pc -setup`. El asi
 | `double_tap_ms` | Ventana máxima entre dos pulsaciones para contar como "doble". |
 | `suspend_key` | Tecla cuyo **doble toque** apaga la TV. Nombre (`rightctrl`, `rightshift`, `scrolllock`, `pause`, `f13`…`f24`, `menu`…) o keycode numérico (`97`, `0x61`). |
 | `wake_key` | Tecla cuyo **doble toque** enciende la TV. Mismo formato. |
+| `hdmi_input` | Si se indica, **solo se actúa cuando la TV está en esa entrada** (`hdmi1`…`hdmi4`, solo el número, o un appId completo). Si la TV está en otra entrada/app, no se envía ningún comando. Vacío = sin restricción. |
 
 ### Teclas que no interfieren con el SO
 
 Por defecto: doble `Right Ctrl` (apagar) / doble `Right Shift` (encender). Buenas alternativas inertes: `scrolllock`, `pause`, y `f13`–`f24` (estas últimas no existen físicamente en teclados normales; puedes mapear una tecla libre a F13 con [`keyd`](https://github.com/rvaiya/keyd) o una regla `udev/hwdb` y usar `"suspend_key": "f13"`). Evita `rightalt` si usas AltGr.
+
+### Filtro por entrada HDMI
+
+Si configuras `hdmi_input` (p.ej. `"hdmi2"`), **antes de cada comando** lgtv2pc consulta la entrada en primer plano de la TV (`getForegroundAppInfo`) y solo actúa si coincide. Así, si tienes la TV en otra entrada (una consola, otro PC) o viendo TV/una app, el servicio **no la toca**, aunque suspendas o bloquees el PC. El onboarding detecta la entrada actual y ofrece fijarla automáticamente.
+
+> Solo aplica en `power_mode: screen` (la TV sigue accesible). En `full`, al encender la TV está apagada y no hay nada que consultar, así que el encendido por WoL no se filtra.
 
 ### `screen` vs `full`
 
@@ -95,6 +102,7 @@ Por defecto: doble `Right Ctrl` (apagar) / doble `Right Shift` (encender). Buena
   ```
 - Las dobles pulsaciones son **globales**: se detectan sin importar la app con foco. Elige `double_tap_ms` corto para evitar disparos accidentales.
 - Si cambias la TV de sitio o se resetea, vuelve a ejecutar `sudo lgtv2pc -pair`.
+- **Descubrimiento**: muchas redes (switches/APs con IGMP snooping) filtran el multicast SSDP, así que el onboarding también escanea los puertos SSAP del `/24`. Para ver qué encuentra sin emparejar: `lgtv2pc -discover`.
 
 ## Desarrollo
 

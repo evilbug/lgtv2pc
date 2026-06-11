@@ -16,7 +16,7 @@ import (
 )
 
 // runSetup guía el primer arranque: localiza la TV, empareja (auth), detecta la
-// MAC y escribe el config.json. Es interactivo (lee de stdin).
+// MAC, ofrece fijar la entrada HDMI y escribe el config.json. Es interactivo.
 func runSetup(log *slog.Logger, configPath string) error {
 	in := bufio.NewReader(os.Stdin)
 
@@ -24,7 +24,6 @@ func runSetup(log *slog.Logger, configPath string) error {
 	fmt.Println("Asegúrate de que la TV está ENCENDIDA y en la misma red.")
 	fmt.Println()
 
-	// Parte de una config existente si la hay, para no perder ajustes.
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		cfg = config.Default()
@@ -33,94 +32,142 @@ func runSetup(log *slog.Logger, configPath string) error {
 		fmt.Printf("Se encontró configuración previa en %s; se actualizará.\n\n", configPath)
 	}
 
-	// 1) IP de la TV: descubrimiento por SSDP + opción manual.
-	ip, err := chooseTVIP(in)
+	// 1) Localizar la TV (SSDP + escaneo de puertos) y elegir una.
+	tv, err := chooseTV(in)
 	if err != nil {
 		return err
 	}
-	cfg.TVIP = ip
+	cfg.TVIP = tv.IP
+	cfg.Secure = tv.Secure
+	if tv.MAC != "" {
+		cfg.TVMAC = tv.MAC
+	}
+	if tv.Secure {
+		fmt.Println("(La TV solo expone el puerto seguro: se usará wss/3001.)")
+	}
 
 	// 2) Modo de apagado.
 	cfg.PowerMode = choosePowerMode(in, cfg.PowerMode)
 
 	// 3) Emparejamiento (auth) con la TV.
-	tv := lgtv.New(cfg, log)
+	client := lgtv.New(cfg, log)
 	fmt.Println()
 	fmt.Println("Conectando con la TV para emparejar…")
 	fmt.Println(">> MIRA LA PANTALLA DE LA TV y acepta la solicitud de conexión.")
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	key, err := tv.Pair(ctx)
+	key, err := client.Pair(ctx)
 	if err != nil {
 		return fmt.Errorf("emparejamiento fallido: %w", err)
 	}
 	cfg.ClientKey = key
-	fmt.Println("✓ Emparejado correctamente.")
-
-	// 4) MAC para Wake-on-LAN (necesaria en modo full; útil guardarla igual).
-	if mac := discover.MACForIP(ip); mac != "" {
-		cfg.TVMAC = mac
-		fmt.Printf("✓ MAC detectada automáticamente: %s\n", mac)
-	} else if cfg.PowerMode == config.ModeFull {
-		cfg.TVMAC = prompt(in, "No se pudo detectar la MAC. Introdúcela (AA:BB:CC:DD:EE:FF)", cfg.TVMAC)
+	// Identifica la TV elegida: muestra su modelo y le manda un aviso visible,
+	// para confirmar que es la correcta (p.ej. esta y no la del salón).
+	if model, err := client.ModelName(ctx); err == nil && model != "" {
+		fmt.Printf("✓ Emparejado con: %s  (%s)\n", model, cfg.TVIP)
 	} else {
-		fmt.Println("No se detectó la MAC (no hace falta en modo screen).")
+		fmt.Println("✓ Emparejado correctamente.")
+	}
+	if err := client.Toast(ctx, "lgtv2pc: esta TV quedará configurada ✓"); err == nil {
+		fmt.Println("  (Comprueba que el aviso ha aparecido en la TV correcta.)")
+		if !yes(prompt(in, "¿Apareció el aviso en la TV que querías? (S/n)", "s")) {
+			return fmt.Errorf("TV incorrecta; vuelve a ejecutar -setup y elige otra de la lista")
+		}
 	}
 
-	// 5) Teclas (se aceptan los valores por defecto con Enter).
+	// 4) MAC para Wake-on-LAN si aún no la tenemos.
+	if cfg.TVMAC == "" {
+		if mac := discover.MACForIP(cfg.TVIP); mac != "" {
+			cfg.TVMAC = mac
+		}
+	}
+	if cfg.TVMAC != "" {
+		fmt.Printf("✓ MAC: %s\n", cfg.TVMAC)
+	} else if cfg.PowerMode == config.ModeFull {
+		cfg.TVMAC = prompt(in, "No se detectó la MAC (necesaria en modo full). Introdúcela", "")
+	}
+
+	// 5) Filtro por entrada HDMI: ofrecer fijar la entrada actual.
+	cfg.HDMIInput = chooseHDMI(in, client)
+
+	// 6) Teclas (Enter acepta los valores por defecto).
 	cfg.SuspendKey = chooseKey(in, "Tecla para APAGAR la TV (doble toque)", cfg.SuspendKey)
 	cfg.WakeKey = chooseKey(in, "Tecla para ENCENDER la TV (doble toque)", cfg.WakeKey)
 
-	// 6) Guardar.
+	// 7) Guardar.
 	if err := cfg.Save(); err != nil {
 		return fmt.Errorf("guardando %s: %w", configPath, err)
 	}
 
 	fmt.Println()
 	fmt.Printf("✓ Configuración guardada en %s\n", configPath)
-	fmt.Println()
-	fmt.Println("Para arrancar el servicio:")
+	fmt.Println("\nPara arrancar el servicio:")
 	fmt.Println("  sudo systemctl enable --now lgtv2pc")
 	fmt.Println("  journalctl -u lgtv2pc -f")
 	return nil
 }
 
-// chooseTVIP descubre TVs por SSDP y deja elegir, con opción de IP manual.
-func chooseTVIP(in *bufio.Reader) (string, error) {
-	fmt.Println("Buscando TVs LG en la red (SSDP)…")
-	tvs, _ := discover.Discover(4 * time.Second)
+// runDiscover lista las TVs encontradas (diagnóstico, sin emparejar).
+func runDiscover() {
+	fmt.Println("Buscando TVs LG (SSDP + escaneo de puertos 3000/3001)…")
+	tvs := discover.Discover(4 * time.Second)
+	if len(tvs) == 0 {
+		fmt.Println("No se encontró ninguna TV.")
+		return
+	}
+	for _, tv := range tvs {
+		secure := "ws/3000"
+		if tv.Secure {
+			secure = "wss/3001"
+		}
+		mac := tv.MAC
+		if mac == "" {
+			mac = "?"
+		}
+		fmt.Printf("  %-15s  %-17s  %-8s  %s\n", tv.IP, mac, secure, tv.Server)
+	}
+}
+
+// chooseTV descubre TVs y deja elegir, con opción de IP manual.
+func chooseTV(in *bufio.Reader) (discover.TV, error) {
+	fmt.Println("Buscando TVs LG en la red (SSDP + escaneo de puertos)…")
+	tvs := discover.Discover(4 * time.Second)
 
 	if len(tvs) == 0 {
 		fmt.Println("No se encontró ninguna TV automáticamente.")
 		ip := prompt(in, "Introduce la IP de la TV", "")
 		if ip == "" {
-			return "", fmt.Errorf("se necesita una IP de la TV")
+			return discover.TV{}, fmt.Errorf("se necesita una IP de la TV")
 		}
-		return ip, nil
+		return discover.TV{IP: ip, MAC: discover.MACForIP(ip)}, nil
 	}
 
-	fmt.Printf("\nTVs encontradas:\n")
+	fmt.Println("\nTVs encontradas:")
 	for i, tv := range tvs {
-		desc := tv.Server
-		if desc == "" {
-			desc = "(LG webOS)"
+		tags := tv.Server
+		if tv.Secure {
+			tags = strings.TrimSpace(tags + " [seguro/wss]")
 		}
-		fmt.Printf("  [%d] %s  %s\n", i+1, tv.IP, desc)
+		mac := tv.MAC
+		if mac == "" {
+			mac = "MAC desconocida"
+		}
+		fmt.Printf("  [%d] %-15s %s  %s\n", i+1, tv.IP, mac, tags)
 	}
-	fmt.Printf("  [m] introducir IP manualmente\n")
+	fmt.Println("  [m] introducir IP manualmente")
 
 	for {
 		ans := prompt(in, "Elige una opción", "1")
 		if strings.EqualFold(ans, "m") {
 			ip := prompt(in, "Introduce la IP de la TV", "")
 			if ip != "" {
-				return ip, nil
+				return discover.TV{IP: ip, MAC: discover.MACForIP(ip)}, nil
 			}
 			continue
 		}
 		var idx int
 		if _, err := fmt.Sscanf(ans, "%d", &idx); err == nil && idx >= 1 && idx <= len(tvs) {
-			return tvs[idx-1].IP, nil
+			return tvs[idx-1], nil
 		}
 		fmt.Println("Opción no válida.")
 	}
@@ -128,8 +175,7 @@ func chooseTVIP(in *bufio.Reader) (string, error) {
 
 // choosePowerMode pregunta el modo de apagado.
 func choosePowerMode(in *bufio.Reader, current config.PowerMode) config.PowerMode {
-	fmt.Println()
-	fmt.Println("Modo de apagado:")
+	fmt.Println("\nModo de apagado:")
 	fmt.Println("  [1] screen  – apaga solo el panel; la TV sigue en red (recomendado)")
 	fmt.Println("  [2] full    – apaga la TV del todo y la enciende con Wake-on-LAN")
 	def := "1"
@@ -141,6 +187,28 @@ func choosePowerMode(in *bufio.Reader, current config.PowerMode) config.PowerMod
 		return config.ModeFull
 	}
 	return config.ModeScreen
+}
+
+// chooseHDMI consulta la entrada actual de la TV y ofrece restringir a ella.
+func chooseHDMI(in *bufio.Reader, client *lgtv.Client) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	app, err := client.CurrentInput(ctx)
+	if err != nil || app == "" {
+		fmt.Println("\n(No se pudo leer la entrada actual; sin restricción de HDMI.)")
+		return ""
+	}
+	fmt.Printf("\nLa TV está ahora en: %s\n", app)
+	if !strings.HasPrefix(app, "com.webos.app.hdmi") {
+		fmt.Println("No es una entrada HDMI; sin restricción.")
+		return ""
+	}
+	fmt.Println("Puedes limitar la integración a esta entrada: si la TV está en otra")
+	fmt.Println("entrada/app, lgtv2pc no enviará ningún comando (no interfiere otros usos).")
+	if yes(prompt(in, "¿Restringir a esta entrada? (s/N)", "n")) {
+		return app
+	}
+	return ""
 }
 
 // chooseKey pide una tecla validando con keys.ParseKey; reintenta si es inválida.
@@ -168,4 +236,10 @@ func prompt(in *bufio.Reader, question, def string) string {
 		return def
 	}
 	return line
+}
+
+// yes interpreta una respuesta afirmativa.
+func yes(s string) bool {
+	s = strings.ToLower(strings.TrimSpace(s))
+	return s == "s" || s == "si" || s == "sí" || s == "y" || s == "yes"
 }
