@@ -1,0 +1,10 @@
+{
+  "tv_ip": "192.168.1.50",
+  "tv_mac": "AA:BB:CC:DD:EE:FF",
+  "client_key": "",
+  "power_mode": "screen",
+  "secure": false,
+  "double_tap_ms": 400,
+  "suspend_key": "rightctrl",
+  "wake_key": "rightshift"
+}

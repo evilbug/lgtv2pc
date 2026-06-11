@@ -1,0 +1,28 @@
+[Unit]
+Description=Integración LG TV <-> PC (suspende/enciende la TV con el PC)
+Documentation=https://github.com/iagoop/lgtv2pc
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/lgtv2pc -config /etc/lgtv2pc/config.json
+Restart=on-failure
+RestartSec=5
+
+# Corre como root: necesita leer /dev/input/event* (dobles pulsaciones) y el
+# bus del sistema de D-Bus (logind: suspensión y bloqueo de sesión).
+User=root
+
+# Endurecimiento razonable sin romper el acceso a /dev/input ni a D-Bus.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/etc/lgtv2pc
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+
+[Install]
+WantedBy=multi-user.target
