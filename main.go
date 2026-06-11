@@ -34,6 +34,7 @@ func main() {
 		setup      = flag.Bool("setup", false, "onboarding interactivo: localiza la TV, empareja y crea la config")
 		pair       = flag.Bool("pair", false, "re-empareja con la TV y guarda la client-key (config ya existente)")
 		disco      = flag.Bool("discover", false, "lista las TVs encontradas en la red y sale (diagnóstico)")
+		test       = flag.String("test", "", "prueba una acción y sale: 'on' o 'off'")
 	)
 	flag.Parse()
 
@@ -68,6 +69,27 @@ func main() {
 	if cfg.ClientKey == "" {
 		log.Error("no hay client-key; ejecuta primero: lgtv2pc -pair -config " + *configPath)
 		os.Exit(1)
+	}
+
+	if *test != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
+		defer cancel()
+		var err error
+		switch *test {
+		case "on":
+			err = tv.TurnOn(ctx)
+		case "off":
+			err = tv.TurnOff(ctx)
+		default:
+			log.Error("valor de -test inválido (usa 'on' u 'off')", "valor", *test)
+			os.Exit(1)
+		}
+		if err != nil {
+			log.Error("acción de prueba falló", "accion", *test, "err", err)
+			os.Exit(1)
+		}
+		log.Info("acción de prueba completada", "accion", *test)
+		return
 	}
 
 	if err := runDaemon(log, cfg, tv); err != nil {

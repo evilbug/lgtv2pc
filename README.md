@@ -70,9 +70,9 @@ Con la TV **encendida** y en la misma red, ejecuta `sudo lgtv2pc -setup`. El asi
 | Campo | Descripción |
 |---|---|
 | `tv_ip` | IP de la TV (recomendado fijarla por DHCP). **Obligatorio.** |
-| `tv_mac` | MAC de la TV. Solo necesaria en `power_mode: full` (Wake-on-LAN). |
+| `tv_mac` | MAC de la TV. Necesaria en `full` y usada como respaldo en `standby` (Wake-on-LAN). |
 | `client_key` | Se rellena sola al ejecutar `-pair`. No la edites a mano. |
-| `power_mode` | `screen` (apaga solo el panel, la TV sigue en red — recomendado) o `full` (apaga la TV del todo y la enciende con WoL). |
+| `power_mode` | `screen`, `standby` o `full` (ver abajo). |
 | `secure` | `true` usa `wss://TV:3001` en lugar de `ws://TV:3000` (webOS recientes). |
 | `double_tap_ms` | Ventana máxima entre dos pulsaciones para contar como "doble". |
 | `suspend_key` | Tecla cuyo **doble toque** apaga la TV. Nombre (`rightctrl`, `rightshift`, `scrolllock`, `pause`, `f13`…`f24`, `menu`…) o keycode numérico (`97`, `0x61`). |
@@ -89,10 +89,13 @@ Si configuras `hdmi_input` (p.ej. `"hdmi2"`), **antes de cada comando** lgtv2pc 
 
 > Solo aplica en `power_mode: screen` (la TV sigue accesible). En `full`, al encender la TV está apagada y no hay nada que consultar, así que el encendido por WoL no se filtra.
 
-### `screen` vs `full`
+### Modos de apagado (`power_mode`)
 
-- **`screen`** (por defecto): usa `turnOffScreen`/`turnOnScreen`. La TV queda encendida con el panel apagado; reacción instantánea, sin Wake-on-LAN. Ideal para OLED.
-- **`full`**: usa `system/turnOff` y enciende con un magic packet de Wake-on-LAN. Ahorra más energía pero el encendido tarda ~10 s en arrancar y exige tener WoL activado en la TV.
+- **`screen`** (por defecto): `turnOffScreen`/`turnOnScreen`. La TV queda **plenamente encendida con el panel apagado** (sin LED de standby); reacción instantánea, sin WoL. Apaga *solo la imagen*.
+- **`standby`**: pone la TV en **standby real** (`system/turnOff`), como el botón del mando (LED encendido, sigue en la red). Al encender **intenta reconectar por SSAP y solo recurre a Wake-on-LAN si la conexión falla** (y hay `tv_mac`). Así, si tu TV se despierta por red, el WoL no se usa.
+- **`full`**: standby (`system/turnOff`) y enciende **siempre** con Wake-on-LAN. Requiere `tv_mac` y tener "Encendido móvil/LAN" activo en la TV.
+
+> Probar el modo elegido sin esperar a un suspend/lock real: `sudo lgtv2pc -test off` y `sudo lgtv2pc -test on` (mira en los logs qué vía usó para encender).
 
 ## Notas y límites
 

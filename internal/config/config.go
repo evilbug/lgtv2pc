@@ -13,9 +13,15 @@ import (
 type PowerMode string
 
 const (
-	// ModeScreen apaga solo el panel (turnOffScreen). La TV sigue en la red.
+	// ModeScreen apaga solo el panel (turnOffScreen); la TV sigue plenamente
+	// encendida. Encendido instantáneo, sin standby.
 	ModeScreen PowerMode = "screen"
-	// ModeFull apaga la TV por completo (system/turnOff) y la enciende con Wake-on-LAN.
+	// ModeStandby pone la TV en standby (system/turnOff, como el mando: LED
+	// encendido, sigue en red). Al encender intenta reconectar por SSAP y solo
+	// recurre a Wake-on-LAN si la conexión falla (y hay MAC configurada).
+	ModeStandby PowerMode = "standby"
+	// ModeFull pone la TV en standby (system/turnOff) y la enciende SIEMPRE con
+	// Wake-on-LAN (requiere tv_mac).
 	ModeFull PowerMode = "full"
 )
 

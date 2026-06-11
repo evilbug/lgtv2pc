@@ -249,6 +249,8 @@ func (c *Client) Pair(ctx context.Context) (string, error) {
 }
 
 // TurnOff "suspende" la TV según el modo configurado, respetando el filtro HDMI.
+//   - screen: apaga solo el panel (TV sigue encendida).
+//   - standby/full: standby real (system/turnOff), como el botón del mando.
 func (c *Client) TurnOff(ctx context.Context) error {
 	s, err := c.openSession(ctx)
 	if err != nil {
@@ -258,23 +260,44 @@ func (c *Client) TurnOff(ctx context.Context) error {
 	if c.gatedOut(ctx, s) {
 		return nil
 	}
-	if c.cfg.PowerMode == config.ModeFull {
-		c.log.Info("apagando TV (system/turnOff)")
-		_, err = s.request(ctx, uriTurnOff, nil)
+	if c.cfg.PowerMode == config.ModeScreen {
+		c.log.Info("apagando panel de la TV (turnOffScreen)")
+		_, err = s.request(ctx, uriScreenOff, map[string]string{"standbyMode": "active"})
 		return err
 	}
-	c.log.Info("apagando panel de la TV (turnOffScreen)")
-	_, err = s.request(ctx, uriScreenOff, map[string]string{"standbyMode": "active"})
+	c.log.Info("poniendo la TV en standby (system/turnOff)")
+	_, err = s.request(ctx, uriTurnOff, nil)
 	return err
 }
 
 // TurnOn enciende la TV según el modo configurado, respetando el filtro HDMI.
+//   - screen: turnOnScreen.
+//   - full: siempre Wake-on-LAN.
+//   - standby: intenta SSAP y, si no responde, recurre a WoL (si hay MAC).
 func (c *Client) TurnOn(ctx context.Context) error {
-	if c.cfg.PowerMode == config.ModeFull {
-		// La TV está apagada: no hay nada que interferir, se enciende con WoL.
+	switch c.cfg.PowerMode {
+	case config.ModeFull:
 		c.log.Info("encendiendo TV (Wake-on-LAN)", "mac", c.cfg.TVMAC)
 		return WakeOnLAN(c.cfg.TVMAC)
+
+	case config.ModeStandby:
+		if err := c.ssapScreenOn(ctx); err != nil {
+			if c.cfg.TVMAC != "" {
+				c.log.Info("SSAP no encendió la TV en standby; usando Wake-on-LAN",
+					"mac", c.cfg.TVMAC, "err", err)
+				return WakeOnLAN(c.cfg.TVMAC)
+			}
+			return err
+		}
+		return nil
+
+	default: // ModeScreen
+		return c.ssapScreenOn(ctx)
 	}
+}
+
+// ssapScreenOn abre sesión y envía turnOnScreen (respetando el filtro HDMI).
+func (c *Client) ssapScreenOn(ctx context.Context) error {
 	s, err := c.openSession(ctx)
 	if err != nil {
 		return err
@@ -283,7 +306,7 @@ func (c *Client) TurnOn(ctx context.Context) error {
 	if c.gatedOut(ctx, s) {
 		return nil
 	}
-	c.log.Info("encendiendo panel de la TV (turnOnScreen)")
+	c.log.Info("encendiendo TV (turnOnScreen)")
 	_, err = s.request(ctx, uriScreenOn, map[string]string{"standbyMode": "active"})
 	return err
 }
