@@ -1,72 +1,72 @@
 # lgtv2pc
 
-Servicio en segundo plano que sincroniza el estado de una **TV LG (webOS)** con tu **PC Linux**.
+Background service that syncs the state of an **LG TV (webOS)** with your **Linux PC**.
 
-## Qué hace
+## What it does
 
-| Evento del PC | Acción sobre la TV |
+| PC event | Action on the TV |
 |---|---|
-| El PC se **suspende/duerme** | Apaga/suspende la TV (antes de dormir, mientras aún hay red) |
-| El PC **resume** | Enciende la TV (solo si la sesión no está bloqueada) |
-| La sesión se **bloquea** (lockscreen) | Apaga/suspende la TV |
-| La sesión se **desbloquea** | Enciende la TV |
-| PC activo: **doble Right Ctrl** | Apaga/suspende la TV (manual) |
-| PC activo: **doble Right Shift** | Enciende la TV (manual) |
+| The PC **suspends/sleeps** | Turns off/suspends the TV (before sleeping, while the network is still up) |
+| The PC **resumes** | Turns on the TV (only if the session is not locked) |
+| The session **locks** (lockscreen) | Turns off/suspends the TV |
+| The session **unlocks** | Turns on the TV |
+| PC active: **double Right Ctrl** | Turns off/suspends the TV (manual) |
+| PC active: **double Right Shift** | Turns on the TV (manual) |
 
-Qué significa exactamente "apagar" depende de `power_mode` (apagar solo el panel, standby real, o standby + WoL — ver abajo).
+What "turn off" means exactly depends on `power_mode` (turn off just the panel, real standby, or standby + WoL — see below).
 
-Las teclas son configurables (ver `suspend_key`/`wake_key`).
+The keys are configurable (see `suspend_key`/`wake_key`).
 
-La lógica automática mantiene una regla simple: **la TV está encendida solo si el PC está despierto _y_ la sesión desbloqueada.** Así, si resumes el equipo pero sigues en la pantalla de contraseña, la TV no se enciende hasta que desbloqueas.
+The automatic logic keeps a simple rule: **the TV is on only if the PC is awake _and_ the session is unlocked.** So if you resume the machine but are still on the password screen, the TV won't turn on until you unlock.
 
-## Cómo funciona
+## How it works
 
-- **Suspensión / bloqueo**: escucha por D-Bus a `systemd-logind` (`PrepareForSleep`, y `Lock`/`Unlock` de sesión). Para la suspensión toma un *inhibidor `delay`* y así apaga la TV **antes** de que el equipo pierda la red.
-- **TV**: habla el protocolo **SSAP** de webOS por WebSocket (`ws://TV:3000` o, en modelos recientes, `wss://TV:3001` con certificado autofirmado). Requiere un emparejamiento inicial (la TV muestra un diálogo y devuelve una `client-key`).
-- **Dobles pulsaciones**: lee `/dev/input/event*` (evdev) a nivel de kernel, así que funciona igual en **X11 y Wayland**. Leer evdev **no consume** la pulsación (el SO la sigue viendo), por eso por defecto se usan modificadores derechos pulsados solos (`Right Ctrl`/`Right Shift`): existen en todo teclado, no escriben texto y ni KDE ni GNOME asignan acción a su doble toque. Además, el doble toque solo cuenta si no se pulsó otra tecla en medio.
+- **Suspend / lock**: listens over D-Bus to `systemd-logind` (`PrepareForSleep`, and session `Lock`/`Unlock`). For suspend it takes a *`delay` inhibitor* so it can turn off the TV **before** the machine loses the network.
+- **TV**: speaks webOS's **SSAP** protocol over WebSocket (`ws://TV:3000` or, on recent models, `wss://TV:3001` with a self-signed certificate). Requires an initial pairing (the TV shows a dialog and returns a `client-key`).
+- **Double taps**: reads `/dev/input/event*` (evdev) at the kernel level, so it works the same on **X11 and Wayland**. Reading evdev **does not consume** the keypress (the OS still sees it), which is why right-side modifiers pressed alone (`Right Ctrl`/`Right Shift`) are used by default: they exist on every keyboard, don't type text, and neither KDE nor GNOME assign an action to their double tap. Also, the double tap only counts if no other key was pressed in between.
 
-## Requisitos
+## Requirements
 
-- Go ≥ 1.21 para compilar.
-- La TV y el PC en la misma red.
-- En la TV: **Configuración → General → Dispositivos móviles / Encendido móvil** activado (para que responda en red; imprescindible para Wake-on-LAN en `full` y en el respaldo de `standby`).
-- El servicio corre como **root** (necesita `/dev/input` y el bus de sistema).
+- Go ≥ 1.21 to build.
+- The TV and the PC on the same network.
+- On the TV: **Settings → General → Mobile devices / Mobile TV On** enabled (so it responds over the network; required for Wake-on-LAN in `full` and in the `standby` fallback).
+- The service runs as **root** (it needs `/dev/input` and the system bus).
 
-## Instalación
+## Installation
 
 ```sh
-sudo make install            # compila e instala binario + unit systemd
-sudo lgtv2pc -setup          # onboarding: localiza la TV, empareja y crea la config
+sudo make install            # build and install binary + systemd unit
+sudo lgtv2pc -setup          # onboarding: locate the TV, pair, and create the config
 sudo systemctl enable --now lgtv2pc
-journalctl -u lgtv2pc -f     # ver logs
+journalctl -u lgtv2pc -f     # view logs
 ```
 
 ### Onboarding (`lgtv2pc -setup`)
 
-Con la TV **encendida** y en la misma red, ejecuta `sudo lgtv2pc -setup`. El asistente:
+With the TV **on** and on the same network, run `sudo lgtv2pc -setup`. The wizard:
 
-1. **Localiza las TVs** en la red por SSDP y, como respaldo, escaneando los puertos SSAP (3000/3001) del `/24` local. **Si hay varias** (p.ej. una en el salón), las lista con IP/MAC y eliges; también puedes escribir la IP a mano. Detecta solo si la TV requiere conexión segura (wss/3001).
-2. Pregunta el **modo de apagado** (`screen` / `standby` / `full`).
-3. **Empareja (auth)**: la TV muestra un diálogo de "solicitud de conexión" — **acéptalo en la pantalla**. Se guarda la `client-key`. Después muestra el **modelo** y manda un **aviso a la TV** para que confirmes que es la correcta.
-4. **Detecta la MAC** automáticamente (vía tabla ARP) para Wake-on-LAN.
-5. Si la TV está en una entrada HDMI, ofrece **restringir la integración a esa entrada** (`hdmi_input`).
-6. Permite ajustar las **teclas** (Enter acepta los valores por defecto).
-7. Escribe `/etc/lgtv2pc/config.json`.
+1. **Locates the TVs** on the network via SSDP and, as a fallback, scanning the SSAP ports (3000/3001) of the local `/24`. **If there are several** (e.g. one in the living room), it lists them with IP/MAC and you choose; you can also type the IP by hand. It detects whether the TV requires a secure connection (wss/3001).
+2. Asks for the **power-off mode** (`screen` / `standby` / `full`).
+3. **Pairs (auth)**: the TV shows a "connection request" dialog — **accept it on the screen**. The `client-key` is saved. Afterwards it shows the **model** and sends a **notice to the TV** so you can confirm it's the right one.
+4. **Detects the MAC** automatically (via the ARP table) for Wake-on-LAN.
+5. If the TV is on an HDMI input, it offers to **restrict the integration to that input** (`hdmi_input`).
+6. Lets you adjust the **keys** (Enter accepts the defaults).
+7. Writes `/etc/lgtv2pc/config.json`.
 
-`sudo lgtv2pc -pair` re-empareja sobre una config ya existente (p.ej. si reseteaste la TV).
+`sudo lgtv2pc -pair` re-pairs on top of an existing config (e.g. if you reset the TV).
 
-### Comandos
+### Commands
 
-| Comando | Para qué |
+| Command | What for |
 |---|---|
-| `lgtv2pc` | Arranca el servicio (lo normal es vía systemd). |
-| `lgtv2pc -setup` | Onboarding interactivo (localiza, empareja, crea la config). |
-| `lgtv2pc -pair` | Re-empareja sobre una config existente. |
-| `lgtv2pc -discover` | Lista las TVs encontradas en la red y sale (diagnóstico). |
-| `lgtv2pc -test on\|off\|cycle` | Prueba una acción y sale. `cycle` = apaga, espera y reenciende. |
-| `lgtv2pc -config <ruta>` | Usa otra ruta de configuración (por defecto `/etc/lgtv2pc/config.json`). |
+| `lgtv2pc` | Starts the service (normally via systemd). |
+| `lgtv2pc -setup` | Interactive onboarding (locate, pair, create the config). |
+| `lgtv2pc -pair` | Re-pairs on top of an existing config. |
+| `lgtv2pc -discover` | Lists the TVs found on the network and exits (diagnostics). |
+| `lgtv2pc -test on\|off\|cycle` | Tests an action and exits. `cycle` = turn off, wait, and turn back on. |
+| `lgtv2pc -config <path>` | Uses another config path (defaults to `/etc/lgtv2pc/config.json`). |
 
-## Configuración (`/etc/lgtv2pc/config.json`)
+## Configuration (`/etc/lgtv2pc/config.json`)
 
 ```json
 {
@@ -82,51 +82,51 @@ Con la TV **encendida** y en la misma red, ejecuta `sudo lgtv2pc -setup`. El asi
 }
 ```
 
-| Campo | Descripción |
+| Field | Description |
 |---|---|
-| `tv_ip` | IP de la TV (recomendado fijarla por DHCP). **Obligatorio.** |
-| `tv_mac` | MAC de la TV. Necesaria en `full` y usada como respaldo en `standby` (Wake-on-LAN). |
-| `client_key` | Se rellena sola al ejecutar `-pair`. No la edites a mano. |
-| `power_mode` | `screen`, `standby` o `full` (ver abajo). |
-| `secure` | `true` usa `wss://TV:3001` en lugar de `ws://TV:3000` (webOS recientes). |
-| `double_tap_ms` | Ventana máxima entre dos pulsaciones para contar como "doble". |
-| `suspend_key` | Tecla cuyo **doble toque** apaga la TV. Nombre (`rightctrl`, `rightshift`, `scrolllock`, `pause`, `f13`…`f24`, `menu`…) o keycode numérico (`97`, `0x61`). |
-| `wake_key` | Tecla cuyo **doble toque** enciende la TV. Mismo formato. |
-| `hdmi_input` | Si se indica, **solo se actúa cuando la TV está en esa entrada** (`hdmi1`…`hdmi4`, solo el número, o un appId completo). Si la TV está en otra entrada/app, no se envía ningún comando. Vacío = sin restricción. |
+| `tv_ip` | TV IP (recommended to pin it via DHCP). **Required.** |
+| `tv_mac` | TV MAC. Needed in `full` and used as a fallback in `standby` (Wake-on-LAN). |
+| `client_key` | Filled in automatically when you run `-pair`. Don't edit it by hand. |
+| `power_mode` | `screen`, `standby`, or `full` (see below). |
+| `secure` | `true` uses `wss://TV:3001` instead of `ws://TV:3000` (recent webOS). |
+| `double_tap_ms` | Maximum window between two keypresses to count as a "double". |
+| `suspend_key` | Key whose **double tap** turns off the TV. Name (`rightctrl`, `rightshift`, `scrolllock`, `pause`, `f13`…`f24`, `menu`…) or numeric keycode (`97`, `0x61`). |
+| `wake_key` | Key whose **double tap** turns on the TV. Same format. |
+| `hdmi_input` | If set, **action is only taken when the TV is on that input** (`hdmi1`…`hdmi4`, just the number, or a full appId). If the TV is on another input/app, no command is sent. Empty = no restriction. |
 
-### Teclas que no interfieren con el SO
+### Keys that don't interfere with the OS
 
-Por defecto: doble `Right Ctrl` (apagar) / doble `Right Shift` (encender). Buenas alternativas inertes: `scrolllock`, `pause`, y `f13`–`f24` (estas últimas no existen físicamente en teclados normales; puedes mapear una tecla libre a F13 con [`keyd`](https://github.com/rvaiya/keyd) o una regla `udev/hwdb` y usar `"suspend_key": "f13"`). Evita `rightalt` si usas AltGr.
+By default: double `Right Ctrl` (turn off) / double `Right Shift` (turn on). Good inert alternatives: `scrolllock`, `pause`, and `f13`–`f24` (the latter don't physically exist on normal keyboards; you can map a free key to F13 with [`keyd`](https://github.com/rvaiya/keyd) or a `udev/hwdb` rule and use `"suspend_key": "f13"`). Avoid `rightalt` if you use AltGr.
 
-### Filtro por entrada HDMI
+### HDMI input filter
 
-Si configuras `hdmi_input` (p.ej. `"hdmi2"`), **antes de cada comando** lgtv2pc consulta la entrada en primer plano de la TV (`getForegroundAppInfo`) y solo actúa si coincide. Así, si tienes la TV en otra entrada (una consola, otro PC) o viendo TV/una app, el servicio **no la toca**, aunque suspendas o bloquees el PC. El onboarding detecta la entrada actual y ofrece fijarla automáticamente.
+If you configure `hdmi_input` (e.g. `"hdmi2"`), **before each command** lgtv2pc queries the TV's foreground input (`getForegroundAppInfo`) and only acts if it matches. So if your TV is on another input (a console, another PC) or watching TV/an app, the service **won't touch it**, even if you suspend or lock the PC. Onboarding detects the current input and offers to pin it automatically.
 
-> Se aplica siempre que la TV sea accesible por SSAP: al **apagar** en cualquier modo, y al **encender** salvo cuando se usa Wake-on-LAN puro (`full`, o el respaldo de `standby`), porque ahí la TV está apagada y no hay entrada que consultar.
+> It applies whenever the TV is reachable over SSAP: when **turning off** in any mode, and when **turning on** except when pure Wake-on-LAN is used (`full`, or the `standby` fallback), because there the TV is off and there's no input to query.
 
-### Modos de apagado (`power_mode`)
+### Power-off modes (`power_mode`)
 
-- **`screen`** (por defecto): `turnOffScreen`/`turnOnScreen`. La TV queda **plenamente encendida con el panel apagado** (sin LED de standby); reacción instantánea, sin WoL. Apaga *solo la imagen*.
-- **`standby`**: pone la TV en **standby real** (`system/turnOff`), como el botón del mando (LED encendido, sigue en la red). Al encender **intenta reconectar por SSAP y solo recurre a Wake-on-LAN si la conexión falla** (y hay `tv_mac`). Así, si tu TV se despierta por red, el WoL no se usa.
-- **`full`**: standby (`system/turnOff`) y enciende **siempre** con Wake-on-LAN. Requiere `tv_mac` y tener "Encendido móvil/LAN" activo en la TV.
+- **`screen`** (default): `turnOffScreen`/`turnOnScreen`. The TV stays **fully on with the panel off** (no standby LED); instant reaction, no WoL. Turns off *only the image*.
+- **`standby`**: puts the TV in **real standby** (`system/turnOff`), like the remote's button (LED on, still on the network). When turning on it **tries to reconnect over SSAP and only falls back to Wake-on-LAN if the connection fails** (and there's a `tv_mac`). So if your TV wakes over the network, WoL isn't used.
+- **`full`**: standby (`system/turnOff`) and **always** turns on with Wake-on-LAN. Requires `tv_mac` and having "Mobile TV On / LAN" enabled on the TV.
 
-> Probar el modo elegido sin esperar a un suspend/lock real: `sudo lgtv2pc -test off` y `sudo lgtv2pc -test on`. Si **la TV es tu monitor**, usa `sudo lgtv2pc -test cycle`: apaga, espera unos segundos y reenciende sola (así no te quedas sin pantalla para escribir el segundo comando). Mira en los logs qué vía usó para encender (`turnOnScreen` = SSAP; `Wake-on-LAN` = WoL).
+> To test the chosen mode without waiting for a real suspend/lock: `sudo lgtv2pc -test off` and `sudo lgtv2pc -test on`. If **the TV is your monitor**, use `sudo lgtv2pc -test cycle`: it turns off, waits a few seconds, and turns back on by itself (so you're not left without a screen to type the second command). Check the logs to see which path it used to turn on (`turnOnScreen` = SSAP; `Wake-on-LAN` = WoL).
 
-## Notas y límites
+## Notes and limits
 
-- El bloqueo/desbloqueo depende de que tu escritorio informe a `logind` (`loginctl lock-session`). GNOME y KDE Plasma lo hacen de serie. Si tu bloqueador no lo integra, los eventos de lock no llegarán (suspensión y dobles pulsaciones siguen funcionando). Compruébalo con:
+- Lock/unlock depends on your desktop reporting to `logind` (`loginctl lock-session`). GNOME and KDE Plasma do this out of the box. If your locker doesn't integrate it, lock events won't arrive (suspend and double taps still work). Check it with:
   ```sh
   dbus-monitor --system "interface='org.freedesktop.login1.Session'"
   ```
-- Las dobles pulsaciones son **globales**: se detectan sin importar la app con foco. Elige `double_tap_ms` corto para evitar disparos accidentales.
-- Si cambias la TV de sitio o se resetea, vuelve a ejecutar `sudo lgtv2pc -pair`.
-- **Descubrimiento**: muchas redes (switches/APs con IGMP snooping) filtran el multicast SSDP, así que el onboarding también escanea los puertos SSAP del `/24`. Para ver qué encuentra sin emparejar: `lgtv2pc -discover`.
+- Double taps are **global**: they're detected regardless of the focused app. Pick a short `double_tap_ms` to avoid accidental triggers.
+- If you move the TV or it gets reset, run `sudo lgtv2pc -pair` again.
+- **Discovery**: many networks (switches/APs with IGMP snooping) filter SSDP multicast, so onboarding also scans the SSAP ports of the `/24`. To see what it finds without pairing: `lgtv2pc -discover`.
 
-## Desarrollo
+## Development
 
 ```sh
-make build      # compila ./lgtv2pc
+make build      # builds ./lgtv2pc
 go vet ./...
-# probar sin instalar (necesita root para /dev/input):
+# test without installing (needs root for /dev/input):
 sudo ./lgtv2pc -config ./config.example.json
 ```
