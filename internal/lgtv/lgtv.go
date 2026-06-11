@@ -5,6 +5,7 @@ package lgtv
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -47,9 +48,13 @@ type ssapMessage struct {
 	Error   string          `json:"error,omitempty"`
 }
 
-// dial abre el WebSocket hacia la TV.
+// dial abre el WebSocket hacia la TV. En wss se omite la verificación del
+// certificado: las TVs LG presentan uno autofirmado y nos conectamos por IP.
 func (c *Client) dial(ctx context.Context) (*websocket.Conn, error) {
-	d := websocket.Dialer{HandshakeTimeout: 5 * time.Second}
+	d := websocket.Dialer{
+		HandshakeTimeout: 8 * time.Second,
+		TLSClientConfig:  &tls.Config{InsecureSkipVerify: true},
+	}
 	conn, _, err := d.DialContext(ctx, c.cfg.WSURL(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("conectando a %s: %w", c.cfg.WSURL(), err)

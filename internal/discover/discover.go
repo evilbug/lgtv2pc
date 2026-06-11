@@ -124,8 +124,12 @@ func scanSubnet(perHost time.Duration) map[string]*TV {
 			if !has3000 && !has3001 {
 				return
 			}
+			// Preferir wss/3001 siempre que esté disponible: los webOS modernos
+			// mantienen el 3000 abierto a nivel TCP pero resetean el WebSocket
+			// sin cifrar, aceptando SSAP solo por 3001. Solo se usa ws/3000 si
+			// el 3001 no está (TVs antiguas).
 			mu.Lock()
-			res[addr] = &TV{IP: addr, Secure: has3001 && !has3000}
+			res[addr] = &TV{IP: addr, Secure: has3001}
 			mu.Unlock()
 		}(addr)
 	}
