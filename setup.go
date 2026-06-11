@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -23,6 +24,13 @@ func runSetup(log *slog.Logger, configPath string) error {
 	fmt.Println("== Configuración de lgtv2pc ==")
 	fmt.Println("Asegúrate de que la TV está ENCENDIDA y en la misma red.")
 	fmt.Println()
+
+	// Comprobamos PRONTO que podremos escribir la config. Así fallamos aquí
+	// (con un mensaje claro sobre sudo) en lugar de tras emparejar con la TV,
+	// que es interactivo y obliga a repetir la aceptación en la pantalla.
+	if err := ensureConfigWritable(configPath); err != nil {
+		return err
+	}
 
 	cfg, err := config.Load(configPath)
 	if err != nil {
@@ -104,6 +112,25 @@ func runSetup(log *slog.Logger, configPath string) error {
 	fmt.Println("\nPara arrancar el servicio:")
 	fmt.Println("  sudo systemctl enable --now lgtv2pc")
 	fmt.Println("  journalctl -u lgtv2pc -f")
+	return nil
+}
+
+// ensureConfigWritable verifica que se podrá crear/escribir el archivo de
+// configuración antes de empezar el onboarding. Crea el directorio si falta y
+// prueba a escribir un archivo temporal; si no hay permisos, devuelve un error
+// accionable pidiendo ejecutar con sudo.
+func ensureConfigWritable(configPath string) error {
+	dir := filepath.Dir(configPath)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("no se puede crear %s (%v); ejecuta el onboarding con privilegios: sudo %s -setup", dir, err, os.Args[0])
+	}
+	probe := filepath.Join(dir, ".lgtv2pc-write-test")
+	f, err := os.OpenFile(probe, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return fmt.Errorf("sin permiso de escritura en %s (%v); ejecuta el onboarding con privilegios: sudo %s -setup", dir, err, os.Args[0])
+	}
+	f.Close()
+	_ = os.Remove(probe)
 	return nil
 }
 

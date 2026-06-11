@@ -1,8 +1,9 @@
 // lgtv2pc es un servicio en segundo plano que sincroniza el estado de una TV
 // LG (webOS) con el de un PC Linux:
 //   - al suspender el PC, apaga la pantalla de la TV (antes de dormir);
-//   - al resumir, la enciende (si la sesión no está bloqueada);
-//   - al bloquear la sesión (lockscreen), apaga la pantalla; al desbloquear, la enciende;
+//   - al resumir, la enciende (aunque la sesión siga bloqueada: necesitas ver
+//     la pantalla de login);
+//   - el bloqueo/desbloqueo de sesión NO toca la TV (solo el ciclo sleep/resume);
 //   - con el PC activo: doble Escape apaga la TV, doble Enter la enciende.
 package main
 
@@ -132,11 +133,13 @@ func runDaemon(log *slog.Logger, cfg *config.Config, tv *lgtv.Client) error {
 
 	ctrl := newController(log, tv)
 
+	// El bloqueo de sesión NO controla la TV: al resumir de una suspensión la
+	// sesión sigue bloqueada y necesitas la pantalla encendida para teclear la
+	// contraseña. Solo suspender/resumir y los doble-tap manuales mueven la TV.
+	// (sleepd sigue registrando el bloqueo en el log, como diagnóstico.)
 	watcher, err := sleepd.New(log, sleepd.Handlers{
 		OnSleep:  func(ctx context.Context) { ctrl.setAsleep(true) },
 		OnResume: func(ctx context.Context) { ctrl.setAsleep(false) },
-		OnLock:   func(ctx context.Context) { ctrl.setLocked(true) },
-		OnUnlock: func(ctx context.Context) { ctrl.setLocked(false) },
 	})
 	if err != nil {
 		return err
@@ -180,19 +183,17 @@ func runDaemon(log *slog.Logger, cfg *config.Config, tv *lgtv.Client) error {
 	return nil
 }
 
-// controller decide el estado deseado de la TV a partir de las condiciones
-// automáticas (suspensión y bloqueo de sesión) y aplica cambios solo en las
-// transiciones. La TV debe estar ENCENDIDA solo si el equipo está despierto Y
-// la sesión desbloqueada. Las dobles pulsaciones son comandos manuales directos
-// (solo ocurren con el equipo activo y desbloqueado, así que no entran en
-// conflicto con la lógica automática).
+// controller decide el estado deseado de la TV únicamente a partir del ciclo de
+// suspensión/resume del PC, y aplica cambios solo en las transiciones. La TV
+// debe estar ENCENDIDA mientras el equipo esté despierto (independientemente de
+// si la sesión está bloqueada: al resumir necesitas ver la pantalla de login).
+// Las dobles pulsaciones son comandos manuales directos.
 type controller struct {
 	log *slog.Logger
 	tv  *lgtv.Client
 
 	mu     sync.Mutex
 	asleep bool
-	locked bool
 	tvOn   bool // último estado aplicado
 	inited bool
 }
@@ -208,17 +209,10 @@ func (c *controller) setAsleep(v bool) {
 	c.apply()
 }
 
-func (c *controller) setLocked(v bool) {
-	c.mu.Lock()
-	c.locked = v
-	c.mu.Unlock()
-	c.apply()
-}
-
 // apply calcula el estado deseado y lo aplica si cambió.
 func (c *controller) apply() {
 	c.mu.Lock()
-	desiredOn := !c.asleep && !c.locked
+	desiredOn := !c.asleep
 	if c.inited && desiredOn == c.tvOn {
 		c.mu.Unlock()
 		return
