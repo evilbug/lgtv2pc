@@ -72,23 +72,31 @@ func main() {
 	}
 
 	if *test != "" {
-		ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
-		defer cancel()
-		var err error
+		do := func(name string, fn func(context.Context) error) {
+			ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
+			defer cancel()
+			if err := fn(ctx); err != nil {
+				log.Error("acción de prueba falló", "accion", name, "err", err)
+				os.Exit(1)
+			}
+			log.Info("acción de prueba completada", "accion", name)
+		}
 		switch *test {
 		case "on":
-			err = tv.TurnOn(ctx)
+			do("on", tv.TurnOn)
 		case "off":
-			err = tv.TurnOff(ctx)
+			do("off", tv.TurnOff)
+		case "cycle":
+			// Útil cuando la TV es tu monitor: apaga, espera y reenciende solo.
+			do("off", tv.TurnOff)
+			const wait = 8 * time.Second
+			log.Info("esperando antes de reencender (mira la TV)…", "segundos", int(wait.Seconds()))
+			time.Sleep(wait)
+			do("on", tv.TurnOn)
 		default:
-			log.Error("valor de -test inválido (usa 'on' u 'off')", "valor", *test)
+			log.Error("valor de -test inválido (usa 'on', 'off' o 'cycle')", "valor", *test)
 			os.Exit(1)
 		}
-		if err != nil {
-			log.Error("acción de prueba falló", "accion", *test, "err", err)
-			os.Exit(1)
-		}
-		log.Info("acción de prueba completada", "accion", *test)
 		return
 	}
 
