@@ -176,17 +176,25 @@ func chooseTV(in *bufio.Reader) (discover.TV, error) {
 // choosePowerMode pregunta el modo de apagado.
 func choosePowerMode(in *bufio.Reader, current config.PowerMode) config.PowerMode {
 	fmt.Println("\nModo de apagado:")
-	fmt.Println("  [1] screen  – apaga solo el panel; la TV sigue en red (recomendado)")
-	fmt.Println("  [2] full    – apaga la TV del todo y la enciende con Wake-on-LAN")
+	fmt.Println("  [1] screen   – apaga solo el panel; la TV sigue encendida. Instantáneo.")
+	fmt.Println("  [2] standby  – standby real, como el mando (LED); reenciende por SSAP o WoL")
+	fmt.Println("  [3] full     – standby + encendido SIEMPRE por Wake-on-LAN (requiere MAC)")
 	def := "1"
-	if current == config.ModeFull {
+	switch current {
+	case config.ModeStandby:
 		def = "2"
+	case config.ModeFull:
+		def = "3"
 	}
 	ans := prompt(in, "Elige modo", def)
-	if strings.HasPrefix(ans, "2") || strings.EqualFold(ans, "full") {
+	switch {
+	case strings.HasPrefix(ans, "3") || strings.EqualFold(ans, "full"):
 		return config.ModeFull
+	case strings.HasPrefix(ans, "2") || strings.EqualFold(ans, "standby"):
+		return config.ModeStandby
+	default:
+		return config.ModeScreen
 	}
-	return config.ModeScreen
 }
 
 // chooseHDMI consulta la entrada actual de la TV y ofrece restringir a ella.
